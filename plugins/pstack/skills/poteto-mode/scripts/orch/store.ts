@@ -1034,6 +1034,46 @@ function parseGtPullRequest({
   );
 }
 
+function githubPullRequestState({
+  branch,
+  pr,
+  repo,
+}: {
+  branch: string;
+  pr: number;
+  repo: string;
+}): FrontierPrState {
+  let raw: string;
+  try {
+    raw = execFileSync(
+      "gh",
+      ["pr", "view", String(pr), "--json", "state", "--jq", ".state"],
+      {
+        cwd: repo,
+        encoding: "utf8",
+        env: process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+  } catch (error) {
+    throw new UserError(
+      `gh pr view ${pr} failed for branch ${branch}: ${errorMessage(error)}`
+    );
+  }
+  switch (raw.trim()) {
+    case "OPEN":
+      return "OPEN";
+    case "MERGED":
+      return "MERGED";
+    case "CLOSED":
+      return "CLOSED";
+    default:
+      throw new UserError(
+        `gh pr view ${pr} returned an invalid state for branch ${branch}`
+      );
+  }
+}
+
 function parseGtBranches(raw: string): readonly string[] {
   const branches: string[] = [];
   const lines = raw.replace(/\r/g, "").split("\n");
@@ -1100,7 +1140,11 @@ function graphitePullRequest({
       `gt info output contains multiple PRs for branch ${branch}`
     );
   }
-  return parseGtPullRequest({ branch, detail: rows[0] ?? "" });
+  const cached = parseGtPullRequest({ branch, detail: rows[0] ?? "" });
+  return {
+    pr: cached.pr,
+    state: githubPullRequestState({ branch, pr: cached.pr, repo }),
+  };
 }
 
 function graphiteFrontier(repo: string): readonly GtFrontierEntry[] {

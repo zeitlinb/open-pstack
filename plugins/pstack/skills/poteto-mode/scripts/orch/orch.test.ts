@@ -102,7 +102,7 @@ async function makeGitStack(directory: string): Promise<{
   };
 }
 
-async function withFakeGt<T>({
+async function withFakeGtAndGh<T>({
   directory,
   operation,
   output,
@@ -129,7 +129,7 @@ case "$*" in
     cat "${outputPath}"
     ;;
   "--no-interactive info stack/merged")
-    printf 'stack/merged\\nPR #10 (Merged) merged change\\n'
+    printf 'stack/merged\\nPR #10 (Needs restack) merged change\\n'
     ;;
   "--no-interactive info stack/closed")
     printf 'stack/closed\\nPR #13 (Closed) closed change\\n'
@@ -145,6 +145,30 @@ esac
 `
   );
   await chmod(gt, 0o755);
+
+  const gh = join(bin, "gh");
+  await writeFile(
+    gh,
+    `#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  "pr view 10 --json state --jq .state")
+    printf 'MERGED\\n'
+    ;;
+  "pr view 13 --json state --jq .state")
+    printf 'CLOSED\\n'
+    ;;
+  "pr view 11 --json state --jq .state")
+    printf 'OPEN\\n'
+    ;;
+  *)
+    printf 'unexpected gh arguments: %s\\n' "$*" >&2
+    exit 2
+    ;;
+esac
+`
+  );
+  await chmod(gh, 0o755);
 
   const originalPath = process.env.PATH;
   process.env.PATH = `${bin}:${originalPath ?? ""}`;
@@ -406,7 +430,7 @@ describe("Store", () => {
     ]);
   });
 
-  it("resolves the ordered Graphite frontier and validates an optional pin", async () => {
+  it("uses live GitHub states when the Graphite cache is stale", async () => {
     const { directory, store } = await initializedStore();
     const stack = await makeGitStack(directory);
     const output = `◯ main
@@ -415,7 +439,7 @@ describe("Store", () => {
 ◉ stack/open (current)
 `;
 
-    await withFakeGt({
+    await withFakeGtAndGh({
       directory,
       output,
       operation: async () => {
@@ -482,7 +506,7 @@ describe("Store", () => {
     const { directory, store } = await initializedStore();
     const stack = await makeGitStack(directory);
 
-    await withFakeGt({
+    await withFakeGtAndGh({
       directory,
       output: "◯ main\nthis line is not Graphite output\n",
       operation: async () => {
