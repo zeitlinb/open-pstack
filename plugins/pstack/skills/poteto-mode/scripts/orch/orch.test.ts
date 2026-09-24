@@ -30,6 +30,11 @@ interface RunResult {
   readonly stderr: string;
 }
 
+interface FakeCliPaths {
+  readonly gh: string;
+  readonly gtOutput: string;
+}
+
 async function makeDirectory(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "orch-test-"));
   directories.push(directory);
@@ -108,7 +113,7 @@ async function withFakeGtAndGh<T>({
   output,
 }: {
   directory: string;
-  operation: (outputPath: string) => Promise<T>;
+  operation: (paths: FakeCliPaths) => Promise<T>;
   output: string;
 }): Promise<T> {
   const bin = join(directory, "bin");
@@ -173,7 +178,7 @@ esac
   const originalPath = process.env.PATH;
   process.env.PATH = `${bin}:${originalPath ?? ""}`;
   try {
-    return await operation(outputPath);
+    return await operation({ gh, gtOutput: outputPath });
   } finally {
     if (originalPath === undefined) {
       delete process.env.PATH;
@@ -498,6 +503,46 @@ describe("Store", () => {
             prs: [10, 10],
           })
         ).rejects.toThrow("--prs must not contain duplicates");
+      },
+    });
+  });
+
+  it("preserves the previous frontier when GitHub state lookup fails", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+
+    await withFakeGtAndGh({
+      directory,
+      output: "◯ main\n◉ stack/merged\n",
+      operation: async ({ gh }) => {
+        const before = await store.frontier.set({ repo: stack.repo });
+        await writeFile(gh, "#!/usr/bin/env bash\nexit 1\n");
+
+        await expect(
+          store.frontier.set({ repo: stack.repo })
+        ).rejects.toThrow("gh pr view 10 failed for branch stack/merged");
+        expect(await store.frontier.show()).toEqual(before);
+      },
+    });
+  });
+
+  it("preserves the previous frontier when GitHub returns an invalid state", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+
+    await withFakeGtAndGh({
+      directory,
+      output: "◯ main\n◉ stack/merged\n",
+      operation: async ({ gh }) => {
+        const before = await store.frontier.set({ repo: stack.repo });
+        await writeFile(gh, "#!/usr/bin/env bash\nprintf 'UNKNOWN\\n'\n");
+
+        await expect(
+          store.frontier.set({ repo: stack.repo })
+        ).rejects.toThrow(
+          "gh pr view 10 returned an invalid state for branch stack/merged"
+        );
+        expect(await store.frontier.show()).toEqual(before);
       },
     });
   });
