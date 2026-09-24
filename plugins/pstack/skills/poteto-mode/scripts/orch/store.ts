@@ -1006,52 +1006,35 @@ function parseGtPullRequestIdentity({
     );
   }
   const prRow = prRows[0];
+  if (prRow === undefined) {
+    throw new UserError(`gt info output branch ${branch} has no pull request`);
+  }
   const match =
-    /^(?:\[origin\] )?PR #([1-9]\d*)(?: \(([^)\r\n]+)\))?(?: .+)?$/.exec(
-      prRow?.line ?? ""
+    /^(?:\[origin\] )?PR #([1-9]\d*)(?: \([^)\r\n]+\))?(?: .+)?$/.exec(
+      prRow.line
     );
   const pr = Number(match?.[1] ?? 0);
   if (match === null || !Number.isSafeInteger(pr)) {
     throw new UserError(
-      `gt info output has an invalid PR row for branch ${branch}: ${prRow?.line ?? ""}`
+      `gt info output has an invalid PR row for branch ${branch}: ${prRow.line}`
     );
   }
   const identityPattern =
     /^https:\/\/app\.graphite\.com\/github\/pr\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/([1-9]\d*)$/;
-  const identities = lines
-    .map((line, index) => ({ index, match: identityPattern.exec(line) }))
-    .filter(
-      (
-        row
-      ): row is {
-        readonly index: number;
-        readonly match: RegExpExecArray;
-      } => row.match !== null
-    );
-  if (identities.length === 0) {
+  const identity = identityPattern.exec(lines[prRow.index + 1] ?? "");
+  if (identity === null) {
     throw new UserError(
-      `gt info output branch ${branch} has no canonical Graphite PR URL`
+      `gt info output branch ${branch} has no adjacent canonical Graphite PR URL`
     );
   }
-  if (identities.length > 1) {
-    throw new UserError(
-      `gt info output contains multiple canonical Graphite PR URLs for branch ${branch}`
-    );
-  }
-  const identity = identities[0];
-  if (identity === undefined || identity.index !== (prRow?.index ?? -2) + 1) {
-    throw new UserError(
-      `gt info output canonical PR URL is not adjacent to the PR row for branch ${branch}`
-    );
-  }
-  const urlPr = Number(identity.match[3] ?? 0);
+  const urlPr = Number(identity[3] ?? 0);
   if (!Number.isSafeInteger(urlPr) || urlPr !== pr) {
     throw new UserError(
       `gt info output PR identity mismatch for branch ${branch}: row ${pr}, URL ${urlPr}`
     );
   }
-  const owner = identity.match[1] ?? "";
-  const name = identity.match[2] ?? "";
+  const owner = identity[1] ?? "";
+  const name = identity[2] ?? "";
   return { githubRepo: `github.com/${owner}/${name}`, pr };
 }
 

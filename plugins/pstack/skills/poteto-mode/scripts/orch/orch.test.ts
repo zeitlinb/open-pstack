@@ -144,7 +144,7 @@ case "$*" in
     cat "${outputPath}"
     ;;
   "--no-interactive info stack/merged")
-    printf 'stack/merged\\nPR #10 (New Graphite status) merged change\\nhttps://app.graphite.com/github/pr/base-owner/widgets/10\\n'
+    printf 'stack/merged\\nPR #10 (New Graphite status) merged change\\nhttps://app.graphite.com/github/pr/base-owner/widgets/10\\ncommit body with an unrelated link\\nhttps://app.graphite.com/github/pr/other-owner/other-repo/99\\n'
     ;;
   "--no-interactive info stack/closed")
     printf 'stack/closed\\nPR #13 (Closed) closed change\\nhttps://app.graphite.com/github/pr/base-owner/widgets/13\\n'
@@ -445,7 +445,7 @@ describe("Store", () => {
     ]);
   });
 
-  it("uses the canonical repo and live state despite an unknown cached status", async () => {
+  it("uses adjacent PR metadata despite an unknown status and later PR link", async () => {
     const { directory, store } = await initializedStore();
     const stack = await makeGitStack(directory);
     const output = `◯ main
