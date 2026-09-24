@@ -32,6 +32,7 @@ interface RunResult {
 
 interface FakeCliPaths {
   readonly gh: string;
+  readonly gt: string;
   readonly gtOutput: string;
 }
 
@@ -87,6 +88,15 @@ async function makeGitStack(directory: string): Promise<{
   git({ repo, args: ["init", "--initial-branch=main"] });
   git({ repo, args: ["config", "user.name", "Orch Test"] });
   git({ repo, args: ["config", "user.email", "orch@example.com"] });
+  git({
+    repo,
+    args: [
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/contributor/widgets.git",
+    ],
+  });
   await writeFile(join(repo, "main.txt"), "main\n");
   git({ repo, args: ["add", "."] });
   git({ repo, args: ["commit", "-m", "main"] });
@@ -134,13 +144,13 @@ case "$*" in
     cat "${outputPath}"
     ;;
   "--no-interactive info stack/merged")
-    printf 'stack/merged\\nPR #10 (Needs restack) merged change\\n'
+    printf 'stack/merged\\nPR #10 (New Graphite status) merged change\\nhttps://app.graphite.com/github/pr/base-owner/widgets/10\\n'
     ;;
   "--no-interactive info stack/closed")
-    printf 'stack/closed\\nPR #13 (Closed) closed change\\n'
+    printf 'stack/closed\\nPR #13 (Closed) closed change\\nhttps://app.graphite.com/github/pr/base-owner/widgets/13\\n'
     ;;
   "--no-interactive info stack/open")
-    printf 'stack/open\\nPR #11 (Needs approvals) open change\\n'
+    printf 'stack/open\\nPR #11 (Needs approvals) open change\\nhttps://app.graphite.com/github/pr/base-owner/widgets/11\\n'
     ;;
   *)
     printf 'unexpected gt arguments: %s\\n' "$*" >&2
@@ -157,13 +167,13 @@ esac
     `#!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
-  "pr view 10 --json state --jq .state")
+  "pr view 10 --repo github.com/base-owner/widgets --json state --jq .state")
     printf 'MERGED\\n'
     ;;
-  "pr view 13 --json state --jq .state")
+  "pr view 13 --repo github.com/base-owner/widgets --json state --jq .state")
     printf 'CLOSED\\n'
     ;;
-  "pr view 11 --json state --jq .state")
+  "pr view 11 --repo github.com/base-owner/widgets --json state --jq .state")
     printf 'OPEN\\n'
     ;;
   *)
@@ -178,7 +188,7 @@ esac
   const originalPath = process.env.PATH;
   process.env.PATH = `${bin}:${originalPath ?? ""}`;
   try {
-    return await operation({ gh, gtOutput: outputPath });
+    return await operation({ gh, gt, gtOutput: outputPath });
   } finally {
     if (originalPath === undefined) {
       delete process.env.PATH;
@@ -435,7 +445,7 @@ describe("Store", () => {
     ]);
   });
 
-  it("uses live GitHub states when the Graphite cache is stale", async () => {
+  it("uses the canonical repo and live state despite an unknown cached status", async () => {
     const { directory, store } = await initializedStore();
     const stack = await makeGitStack(directory);
     const output = `◯ main
@@ -541,6 +551,43 @@ describe("Store", () => {
           store.frontier.set({ repo: stack.repo })
         ).rejects.toThrow(
           "gh pr view 10 returned an invalid state for branch stack/merged"
+        );
+        expect(await store.frontier.show()).toEqual(before);
+      },
+    });
+  });
+
+  it("preserves the previous frontier when Graphite PR identity mismatches", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+
+    await withFakeGtAndGh({
+      directory,
+      output: "◯ main\n◉ stack/merged\n",
+      operation: async ({ gt, gtOutput }) => {
+        const before = await store.frontier.set({ repo: stack.repo });
+        await writeFile(
+          gt,
+          `#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  "--no-interactive log short --stack --reverse")
+    cat "${gtOutput}"
+    ;;
+  "--no-interactive info stack/merged")
+    printf 'stack/merged\\nPR #10 (Ready to merge) change\\nhttps://app.graphite.com/github/pr/base-owner/widgets/12\\n'
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+`
+        );
+
+        await expect(
+          store.frontier.set({ repo: stack.repo })
+        ).rejects.toThrow(
+          "gt info output PR identity mismatch for branch stack/merged: row 10, URL 12"
         );
         expect(await store.frontier.show()).toEqual(before);
       },

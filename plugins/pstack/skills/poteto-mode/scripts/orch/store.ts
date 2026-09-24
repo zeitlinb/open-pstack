@@ -967,79 +967,102 @@ function countLine(value: Counts): string {
     : entries.map(([name, count]) => `${name}=${count}`).join(", ");
 }
 
-const OPEN_GT_PR_STATUSES = new Set([
-  "Trunk branch locked",
-  "Changes requested",
-  "Waiting on PRs in this stack to merge",
-  "Waiting on downstack merge state",
-  "Draft",
-  "Required checks failed",
-  "Undergoing failure detection",
-  "Merge queue failed on current head commit",
-  "Handed off to merge queue...",
-  "Waiting on downstack",
-  "Merge conflicts",
-  "Needs reviewers",
-  "Needs approvals",
-  "Needs restack",
-  "Queued to merge...",
-  "Ready to merge",
-  "Ready to merge as stack",
-  "Rebasing...",
-  "Waiting on CI...",
-  "Stale, needs rebase onto trunk",
-  "Unresolved comments",
-  "Waiting on required CI",
-  "Waiting to merge...",
-]);
-
 interface GtPullRequest {
   readonly pr: number;
   readonly state: FrontierPrState;
+}
+
+interface GtPullRequestIdentity {
+  readonly githubRepo: string;
+  readonly pr: number;
 }
 
 interface GtFrontierEntry extends GtPullRequest {
   readonly branches: string;
 }
 
-function parseGtPullRequest({
+function parseGtPullRequestIdentity({
   branch,
-  detail,
+  raw,
 }: {
   branch: string;
-  detail: string;
-}): GtPullRequest {
+  raw: string;
+}): GtPullRequestIdentity {
+  const lines = raw.replace(/\r/g, "").split("\n");
+  const prRows = lines
+    .map((line, index) => ({ index, line }))
+    .filter(
+      ({ line }) =>
+        line.startsWith("PR #") || line.startsWith("[origin] PR #")
+    );
+  if (prRows.length === 0) {
+    throw new UserError(
+      `gt info output branch ${branch} has no pull request; this clone's gt metadata may predate the submit, so resolve the frontier from the stacker's clone or after gt sync`
+    );
+  }
+  if (prRows.length > 1) {
+    throw new UserError(
+      `gt info output contains multiple PRs for branch ${branch}`
+    );
+  }
+  const prRow = prRows[0];
   const match =
     /^(?:\[origin\] )?PR #([1-9]\d*)(?: \(([^)\r\n]+)\))?(?: .+)?$/.exec(
-      detail
+      prRow?.line ?? ""
     );
   const pr = Number(match?.[1] ?? 0);
   if (match === null || !Number.isSafeInteger(pr)) {
     throw new UserError(
-      `gt info output has an invalid PR row for branch ${branch}: ${detail}`
+      `gt info output has an invalid PR row for branch ${branch}: ${prRow?.line ?? ""}`
     );
   }
-  const status = match[2];
-  if (status === "Merged") {
-    return { pr, state: "MERGED" };
+  const identityPattern =
+    /^https:\/\/app\.graphite\.com\/github\/pr\/([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)\/([1-9]\d*)$/;
+  const identities = lines
+    .map((line, index) => ({ index, match: identityPattern.exec(line) }))
+    .filter(
+      (
+        row
+      ): row is {
+        readonly index: number;
+        readonly match: RegExpExecArray;
+      } => row.match !== null
+    );
+  if (identities.length === 0) {
+    throw new UserError(
+      `gt info output branch ${branch} has no canonical Graphite PR URL`
+    );
   }
-  if (status === "Closed") {
-    return { pr, state: "CLOSED" };
+  if (identities.length > 1) {
+    throw new UserError(
+      `gt info output contains multiple canonical Graphite PR URLs for branch ${branch}`
+    );
   }
-  if (status === undefined || OPEN_GT_PR_STATUSES.has(status)) {
-    return { pr, state: "OPEN" };
+  const identity = identities[0];
+  if (identity === undefined || identity.index !== (prRow?.index ?? -2) + 1) {
+    throw new UserError(
+      `gt info output canonical PR URL is not adjacent to the PR row for branch ${branch}`
+    );
   }
-  throw new UserError(
-    `gt info output has an unknown PR state for branch ${branch}: ${status}`
-  );
+  const urlPr = Number(identity.match[3] ?? 0);
+  if (!Number.isSafeInteger(urlPr) || urlPr !== pr) {
+    throw new UserError(
+      `gt info output PR identity mismatch for branch ${branch}: row ${pr}, URL ${urlPr}`
+    );
+  }
+  const owner = identity.match[1] ?? "";
+  const name = identity.match[2] ?? "";
+  return { githubRepo: `github.com/${owner}/${name}`, pr };
 }
 
 function githubPullRequestState({
   branch,
+  githubRepo,
   pr,
   repo,
 }: {
   branch: string;
+  githubRepo: string;
   pr: number;
   repo: string;
 }): FrontierPrState {
@@ -1047,7 +1070,17 @@ function githubPullRequestState({
   try {
     raw = execFileSync(
       "gh",
-      ["pr", "view", String(pr), "--json", "state", "--jq", ".state"],
+      [
+        "pr",
+        "view",
+        String(pr),
+        "--repo",
+        githubRepo,
+        "--json",
+        "state",
+        "--jq",
+        ".state",
+      ],
       {
         cwd: repo,
         encoding: "utf8",
@@ -1123,27 +1156,15 @@ function graphitePullRequest({
       `gt info ${branch} failed: ${errorMessage(error)}`
     );
   }
-  const rows = raw
-    .replace(/\r/g, "")
-    .split("\n")
-    .filter(
-      (line) =>
-        line.startsWith("PR #") || line.startsWith("[origin] PR #")
-    );
-  if (rows.length === 0) {
-    throw new UserError(
-      `gt info output branch ${branch} has no pull request; this clone's gt metadata may predate the submit, so resolve the frontier from the stacker's clone or after gt sync`
-    );
-  }
-  if (rows.length > 1) {
-    throw new UserError(
-      `gt info output contains multiple PRs for branch ${branch}`
-    );
-  }
-  const cached = parseGtPullRequest({ branch, detail: rows[0] ?? "" });
+  const identity = parseGtPullRequestIdentity({ branch, raw });
   return {
-    pr: cached.pr,
-    state: githubPullRequestState({ branch, pr: cached.pr, repo }),
+    pr: identity.pr,
+    state: githubPullRequestState({
+      branch,
+      githubRepo: identity.githubRepo,
+      pr: identity.pr,
+      repo,
+    }),
   };
 }
 
